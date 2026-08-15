@@ -2,23 +2,62 @@ const Video = require("../models/videos");
 
 const YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3";
 
-const searchQueries = [
+/*
+    الأصناف التي نريد جلب فيديوهات منها
+*/
+const categories = [
     "technology",
+    "programming",
     "science",
-    "history",
     "education",
+    "history",
+    "documentary",
     "nature",
     "space",
-    "programming",
     "cars",
+    "motorcycles",
     "travel",
-    "documentary"
+    "food",
+    "cooking",
+    "fitness",
+    "sports",
+    "football",
+    "basketball",
+    "gaming",
+    "music",
+    "movies",
+    "comedy",
+    "news",
+    "business",
+    "finance",
+    "economics",
+    "health",
+    "animals",
+    "photography",
+    "art",
+    "design",
+    "fashion",
+    "DIY",
+    "reviews",
+    "podcast",
+    "vlogs",
+    "adventure",
+    "history documentary",
+    "technology news",
+    "AI artificial intelligence",
+    "space documentary"
 ];
 
+
+/*
+    خلط النتائج
+*/
 function shuffle(array) {
+
     const arr = [...array];
 
     for (let i = arr.length - 1; i > 0; i--) {
+
         const j = Math.floor(Math.random() * (i + 1));
 
         [arr[i], arr[j]] = [arr[j], arr[i]];
@@ -27,118 +66,235 @@ function shuffle(array) {
     return arr;
 }
 
+
+/*
+    جلب فيديوهات YouTube وحفظها في MongoDB
+*/
 async function importYouTubeVideos() {
 
-    const apiKey = process.env.YOUTUBE_API_KEY;
+    try {
 
-    if (!apiKey) {
-        console.log("❌ YOUTUBE_API_KEY is missing");
-        return;
-    }
+        const apiKey = process.env.YOUTUBE_API_KEY;
 
-    // عدد الفيديوهات التي نريدها
-    const TARGET = 200;
+        if (!apiKey) {
 
-    // عدد الفيديوهات الموجودة حاليًا
-    const currentCount = await Video.countDocuments();
+            console.log(
+                "❌ YOUTUBE_API_KEY is missing"
+            );
 
-    console.log(`📦 Videos in database: ${currentCount}`);
-
-    // لو عندنا 200 أو أكثر، لا نفعل شيئًا
-    if (currentCount >= TARGET) {
-        console.log("✅ Database already has 200 videos");
-        return;
-    }
-
-    // عدد الفيديوهات التي نحتاجها
-    const needed = TARGET - currentCount;
-
-    console.log(`🎬 Need ${needed} more videos`);
-
-    const collectedVideos = [];
-    const videoIds = new Set();
-
-    const queries = shuffle(searchQueries);
-
-    for (const query of queries) {
-
-        if (collectedVideos.length >= needed) {
-            break;
+            return;
         }
 
-        let pageToken = null;
 
-        while (collectedVideos.length < needed) {
+        /*
+            العدد النهائي المطلوب
+        */
+        const TARGET = 200;
 
-            const params = new URLSearchParams({
-                part: "snippet",
-                type: "video",
-                maxResults: "50",
-                q: query,
-                key: apiKey
-            });
 
-            if (pageToken) {
-                params.set("pageToken", pageToken);
+        /*
+            معرفة عدد الفيديوهات الموجودة
+        */
+        const currentCount =
+            await Video.countDocuments();
+
+
+        console.log(
+            `📦 Videos currently in database: ${currentCount}`
+        );
+
+
+        /*
+            إذا كان عندنا 200 فيديو أو أكثر
+            لا نحتاج إلى إضافة شيء
+        */
+        if (currentCount >= TARGET) {
+
+            console.log(
+                "✅ Database already contains 200 videos"
+            );
+
+            return;
+        }
+
+
+        /*
+            العدد الذي نحتاجه
+        */
+        const needed =
+            TARGET - currentCount;
+
+
+        console.log(
+            `🎬 Need ${needed} more videos`
+        );
+
+
+        const collectedVideos = [];
+
+        const collectedIds = new Set();
+
+
+        /*
+            خلط الأصناف
+        */
+        const shuffledCategories =
+            shuffle(categories);
+
+
+        /*
+            نأخذ عددًا صغيرًا من كل صنف
+            حتى تكون قاعدة البيانات متنوعة
+        */
+        const videosPerCategory =
+            Math.ceil(needed / shuffledCategories.length);
+
+
+        /*
+            البحث في الأصناف
+        */
+        for (
+            const category of shuffledCategories
+        ) {
+
+            if (
+                collectedVideos.length >= needed
+            ) {
+                break;
             }
 
-            const response = await fetch(
-                `${YOUTUBE_API_URL}/search?${params}`
+
+            console.log(
+                `🔎 Searching category: ${category}`
             );
+
+
+            const params =
+                new URLSearchParams({
+
+                    part: "snippet",
+
+                    type: "video",
+
+                    maxResults:
+                        String(
+                            Math.min(
+                                videosPerCategory,
+                                50
+                            )
+                        ),
+
+                    q: category,
+
+                    key: apiKey
+                });
+
+
+            const response =
+                await fetch(
+                    `${YOUTUBE_API_URL}/search?${params}`
+                );
+
 
             if (!response.ok) {
 
-                const error = await response.text();
+                const error =
+                    await response.text();
 
-                console.log("❌ YouTube API Error:", error);
+                console.log(
+                    "❌ YouTube API Error:",
+                    error
+                );
 
-                return;
+                continue;
             }
 
-            const data = await response.json();
 
-            for (const item of data.items || []) {
+            const data =
+                await response.json();
 
-                const videoId = item.id?.videoId;
+
+            /*
+                معالجة النتائج
+            */
+            for (
+                const item of data.items || []
+            ) {
+
+                const videoId =
+                    item.id?.videoId;
+
 
                 if (!videoId) {
                     continue;
                 }
 
-                // منع التكرار
-                const alreadyExists = await Video.exists({
-                    videoId
-                });
 
-                if (alreadyExists) {
+                /*
+                    منع التكرار داخل الطلب الحالي
+                */
+                if (
+                    collectedIds.has(videoId)
+                ) {
                     continue;
                 }
 
-                if (videoIds.has(videoId)) {
+
+                /*
+                    منع إضافة فيديو موجود مسبقًا
+                    في MongoDB
+                */
+                const exists =
+                    await Video.exists({
+                        videoId
+                    });
+
+
+                if (exists) {
                     continue;
                 }
 
-                videoIds.add(videoId);
+
+                collectedIds.add(videoId);
+
 
                 collectedVideos.push({
 
                     videoId,
 
-                    title: item.snippet?.title || "",
+                    title:
+                        item.snippet?.title ||
+                        "",
 
-                    channelId: item.snippet?.channelId || "",
+                    channelId:
+                        item.snippet?.channelId ||
+                        "",
 
-                    description: item.snippet?.description || "",
+                    description:
+                        item.snippet?.description ||
+                        "",
 
-                    category: query,
+                    category,
 
                     videoUrl:
                         `https://www.youtube.com/watch?v=${videoId}`,
 
                     thumbnailUrl:
-                        item.snippet?.thumbnails?.high?.url ||
-                        item.snippet?.thumbnails?.medium?.url ||
-                        item.snippet?.thumbnails?.default?.url ||
+                        item.snippet
+                            ?.thumbnails
+                            ?.high
+                            ?.url ||
+
+                        item.snippet
+                            ?.thumbnails
+                            ?.medium
+                            ?.url ||
+
+                        item.snippet
+                            ?.thumbnails
+                            ?.default
+                            ?.url ||
+
                         "",
 
                     views: 0,
@@ -146,37 +302,82 @@ async function importYouTubeVideos() {
                     likes: 0
                 });
 
-                if (collectedVideos.length >= needed) {
+
+                if (
+                    collectedVideos.length >=
+                    needed
+                ) {
                     break;
                 }
             }
-
-            pageToken = data.nextPageToken;
-
-            if (!pageToken) {
-                break;
-            }
         }
-    }
 
-    console.log(
-        `🎬 Collected ${collectedVideos.length} videos`
-    );
 
-    // حفظ الفيديوهات
-    if (collectedVideos.length > 0) {
+        /*
+            خلط الفيديوهات
+            حتى لا تكون مرتبة حسب الأصناف
+        */
+        const shuffledVideos =
+            shuffle(collectedVideos);
 
-        await Video.insertMany(
-            collectedVideos,
-            {
-                ordered: false
-            }
-        );
+
+        /*
+            أخذ العدد المطلوب فقط
+        */
+        const videosToInsert =
+            shuffledVideos.slice(
+                0,
+                needed
+            );
+
 
         console.log(
-            `✅ Added ${collectedVideos.length} videos to MongoDB`
+            `🎬 Collected ${videosToInsert.length} videos`
+        );
+
+
+        /*
+            حفظ الفيديوهات في MongoDB
+        */
+        if (
+            videosToInsert.length > 0
+        ) {
+
+            await Video.insertMany(
+                videosToInsert,
+                {
+                    ordered: false
+                }
+            );
+
+
+            console.log(
+                `✅ Added ${videosToInsert.length} videos to MongoDB`
+            );
+        }
+
+
+        /*
+            النتيجة في Logs فقط
+            وليس Route أو صفحة
+        */
+        console.log(
+            `📊 Database now has approximately ${
+                currentCount +
+                videosToInsert.length
+            } videos`
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "❌ YouTube Import Error:",
+            error
         );
     }
 }
 
-module.exports = importYouTubeVideos;
+
+module.exports =
+    importYouTubeVideos;
