@@ -48,10 +48,7 @@ mongoose.connect(url).then(()=>{
     console.log(e.message)
 })
 
-app.use(cors({
-  origin: "https://hassangame994-bot.github.io",
-  credentials: true
-}));
+app.use(cors());
 
 app.use(cookie())
 
