@@ -78,7 +78,7 @@ app.use(likes);
 
 app.use(search);
 
-app.get("/videos",(req,res)=>{
+app.post("/videos",(req,res)=>{
     const Video = require("./models/Video");
 
     const YOUTUBE_API_URL =
