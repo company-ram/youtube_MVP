@@ -47,12 +47,13 @@ const log_in = async(req,res)=>{
                 const token = jwt.sign({
                     id:find_log_in_user._id
                 },process.env.JWT_PASSWORD)
-
+                
                 res.cookie("token", token, {
                     httpOnly: true,
                     secure: false,
-                    sameSite: "strict"
-                })
+                    sameSite: "strict",
+                    maxAge: 30 * 24 * 60 * 60 * 1000
+                });
 
                 return res.status(200).json({
                     success:true,
