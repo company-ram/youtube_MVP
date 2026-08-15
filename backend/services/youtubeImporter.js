@@ -1,173 +1,94 @@
 const Video = require("../models/videos");
 
-const YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3";
+const YOUTUBE_API_URL =
+    "https://www.googleapis.com/youtube/v3";
 
-/*
-    الأصناف التي نريد جلب فيديوهات منها
-*/
 const categories = [
     "technology",
     "programming",
     "science",
     "education",
-    "history",
-    "documentary",
-    "nature",
-    "space",
+    "gaming",
+    "music",
+    "sports",
+    "football",
     "cars",
-    "motorcycles",
     "travel",
     "food",
     "cooking",
     "fitness",
-    "sports",
-    "football",
-    "basketball",
-    "gaming",
-    "music",
-    "movies",
+    "history",
+    "nature",
+    "space",
     "comedy",
     "news",
     "business",
-    "finance",
-    "economics",
-    "health",
-    "animals",
-    "photography",
-    "art",
-    "design",
-    "fashion",
-    "DIY",
-    "reviews",
-    "podcast",
-    "vlogs",
-    "adventure",
-    "history documentary",
-    "technology news",
-    "AI artificial intelligence",
-    "space documentary"
+    "animals"
 ];
 
-
-/*
-    خلط النتائج
-*/
-function shuffle(array) {
-
-    const arr = [...array];
-
-    for (let i = arr.length - 1; i > 0; i--) {
-
-        const j = Math.floor(Math.random() * (i + 1));
-
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-
-    return arr;
-}
-
-
-/*
-    جلب فيديوهات YouTube وحفظها في MongoDB
-*/
 async function importYouTubeVideos() {
 
     try {
 
-        const apiKey = process.env.YOUTUBE_API_KEY;
+        const apiKey =
+            process.env.YOUTUBE_API_KEY;
 
         if (!apiKey) {
-
-            console.log(
-                "❌ YOUTUBE_API_KEY is missing"
-            );
-
+            console.log("❌ YOUTUBE_API_KEY is missing");
             return;
         }
 
-
-        /*
-            العدد النهائي المطلوب
-        */
         const TARGET = 200;
 
-
-        /*
-            معرفة عدد الفيديوهات الموجودة
-        */
         const currentCount =
             await Video.countDocuments();
 
-
         console.log(
-            `📦 Videos currently in database: ${currentCount}`
+            `📦 Current videos: ${currentCount}`
         );
 
-
-        /*
-            إذا كان عندنا 200 فيديو أو أكثر
-            لا نحتاج إلى إضافة شيء
-        */
         if (currentCount >= TARGET) {
 
             console.log(
-                "✅ Database already contains 200 videos"
+                "✅ Already have 200 videos"
             );
 
             return;
         }
 
+        const needed = TARGET - currentCount;
 
         /*
-            العدد الذي نحتاجه
+            200 ÷ 20 categories = 10 videos
+            لكل قسم
         */
-        const needed =
-            TARGET - currentCount;
-
+        const videosPerCategory =
+            Math.ceil(needed / categories.length);
 
         console.log(
-            `🎬 Need ${needed} more videos`
+            `🎬 Need ${needed} videos`
         );
 
+        console.log(
+            `📚 ${videosPerCategory} videos per category`
+        );
 
         const collectedVideos = [];
 
         const collectedIds = new Set();
 
-
         /*
-            خلط الأصناف
+            نمر على كل قسم
         */
-        const shuffledCategories =
-            shuffle(categories);
+        for (const category of categories) {
 
-
-        /*
-            نأخذ عددًا صغيرًا من كل صنف
-            حتى تكون قاعدة البيانات متنوعة
-        */
-        const videosPerCategory =
-            Math.ceil(needed / shuffledCategories.length);
-
-
-        /*
-            البحث في الأصناف
-        */
-        for (
-            const category of shuffledCategories
-        ) {
-
-            if (
-                collectedVideos.length >= needed
-            ) {
+            if (collectedVideos.length >= needed) {
                 break;
             }
 
-
             console.log(
-                `🔎 Searching category: ${category}`
+                `🔎 Searching: ${category}`
             );
-
 
             const params =
                 new URLSearchParams({
@@ -176,25 +97,17 @@ async function importYouTubeVideos() {
 
                     type: "video",
 
-                    maxResults:
-                        String(
-                            Math.min(
-                                videosPerCategory,
-                                50
-                            )
-                        ),
+                    maxResults: "50",
 
                     q: category,
 
                     key: apiKey
                 });
 
-
             const response =
                 await fetch(
                     `${YOUTUBE_API_URL}/search?${params}`
                 );
-
 
             if (!response.ok) {
 
@@ -202,99 +115,81 @@ async function importYouTubeVideos() {
                     await response.text();
 
                 console.log(
-                    "❌ YouTube API Error:",
+                    `❌ Error in ${category}:`,
                     error
                 );
 
                 continue;
             }
 
-
             const data =
                 await response.json();
 
+            let categoryCount = 0;
 
-            /*
-                معالجة النتائج
-            */
-            for (
-                const item of data.items || []
-            ) {
+            for (const item of data.items || []) {
+
+                if (
+                    categoryCount >=
+                    videosPerCategory
+                ) {
+                    break;
+                }
 
                 const videoId =
                     item.id?.videoId;
-
 
                 if (!videoId) {
                     continue;
                 }
 
-
                 /*
-                    منع التكرار داخل الطلب الحالي
+                    منع التكرار داخل الطلب
                 */
-                if (
-                    collectedIds.has(videoId)
-                ) {
+                if (collectedIds.has(videoId)) {
                     continue;
                 }
 
-
                 /*
-                    منع إضافة فيديو موجود مسبقًا
-                    في MongoDB
+                    التأكد أن الفيديو
+                    غير موجود في MongoDB
                 */
                 const exists =
                     await Video.exists({
                         videoId
                     });
 
-
                 if (exists) {
                     continue;
                 }
 
-
                 collectedIds.add(videoId);
-
 
                 collectedVideos.push({
 
                     videoId,
 
                     title:
-                        item.snippet?.title ||
-                        "",
+                        item.snippet?.title || "",
 
                     channelId:
-                        item.snippet?.channelId ||
-                        "",
+                        item.snippet?.channelId || "",
 
                     description:
-                        item.snippet?.description ||
-                        "",
+                        item.snippet?.description || "",
 
-                    category,
+                    /*
+                        هنا نضع القسم
+                    */
+                    category: category,
 
                     videoUrl:
                         `https://www.youtube.com/watch?v=${videoId}`,
 
                     thumbnailUrl:
-                        item.snippet
-                            ?.thumbnails
-                            ?.high
-                            ?.url ||
-
-                        item.snippet
-                            ?.thumbnails
-                            ?.medium
-                            ?.url ||
-
-                        item.snippet
-                            ?.thumbnails
-                            ?.default
-                            ?.url ||
-
+                        item.snippet?.thumbnails?.high?.url ||
+                        item.snippet?.thumbnails?.medium?.url ||
+                        item.snippet?.thumbnails?.default?.url ||
                         "",
 
                     views: 0,
@@ -302,46 +197,29 @@ async function importYouTubeVideos() {
                     likes: 0
                 });
 
+                categoryCount++;
 
-                if (
-                    collectedVideos.length >=
-                    needed
-                ) {
-                    break;
-                }
             }
+
+            console.log(
+                `✅ ${category}: ${categoryCount} videos`
+            );
         }
 
-
         /*
-            خلط الفيديوهات
-            حتى لا تكون مرتبة حسب الأصناف
-        */
-        const shuffledVideos =
-            shuffle(collectedVideos);
-
-
-        /*
-            أخذ العدد المطلوب فقط
+            لا نحفظ أكثر من المطلوب
         */
         const videosToInsert =
-            shuffledVideos.slice(
-                0,
-                needed
-            );
-
+            collectedVideos.slice(0, needed);
 
         console.log(
-            `🎬 Collected ${videosToInsert.length} videos`
+            `🎬 Total collected: ${videosToInsert.length}`
         );
 
-
         /*
-            حفظ الفيديوهات في MongoDB
+            إضافة الفيديوهات إلى MongoDB
         */
-        if (
-            videosToInsert.length > 0
-        ) {
+        if (videosToInsert.length > 0) {
 
             await Video.insertMany(
                 videosToInsert,
@@ -350,34 +228,23 @@ async function importYouTubeVideos() {
                 }
             );
 
-
             console.log(
-                `✅ Added ${videosToInsert.length} videos to MongoDB`
+                `✅ Added ${videosToInsert.length} videos`
             );
         }
 
-
-        /*
-            النتيجة في Logs فقط
-            وليس Route أو صفحة
-        */
         console.log(
-            `📊 Database now has approximately ${
-                currentCount +
-                videosToInsert.length
-            } videos`
+            "🎉 YouTube import completed"
         );
-
 
     } catch (error) {
 
         console.error(
-            "❌ YouTube Import Error:",
+            "❌ YouTube import error:",
             error
         );
     }
 }
-
 
 module.exports =
     importYouTubeVideos;
