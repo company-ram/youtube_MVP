@@ -43,7 +43,7 @@ const create_channel = async(req,res)=>{
                 userId:new_channel.userId
             },process.env.JWT_PASSWORD
         )
-        res.cookie("token", token, {
+        res.cookie("channel_token", token, {
             httpOnly: true,
             secure: true,
             sameSite: "none",
