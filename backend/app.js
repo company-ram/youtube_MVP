@@ -50,7 +50,7 @@ mongoose.connect(url).then(()=>{
 
 
 app.use(cors({
-    origin: "http://localhost:5050",
+    origin: "https://youtubemvp.netlify.app",
     credentials: true
 }));
 
