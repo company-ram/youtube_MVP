@@ -132,7 +132,7 @@ const add_views = async (req, res) => {
                 }
             },
             {
-                new: true,
+                returnDocument: "after",
                 runValidators: true
             }
         );
