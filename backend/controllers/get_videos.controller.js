@@ -19,7 +19,7 @@ const WEIGHTS = {
 // Fraction of the feed that must come from the user's preferred
 // categories (liked/searched). The rest is filled with videos from
 // OTHER categories so new/unseen categories keep surfacing.
-const PREFERRED_FEED_RATIO = 0.1; // 90% preferred, 10% exploration
+const PREFERRED_FEED_RATIO = 0.5; // 50% preferred, 50% exploration
 
 // Distributes two already-sorted arrays into one list, keeping each
 // array's internal order, while respecting an overall target ratio
@@ -191,6 +191,9 @@ const get_all_videos = async (req, res) => {
                 .filter(item => !item.is_preferred)
                 .sort((a, b) => b.score - a.score)
                 .map(item => item.video);
+
+            // TEMP DEBUG — احذف السطر ده بعد ما تتأكد من السبب
+            console.log(`[feed debug] total=${all_videos.length} preferred=${preferred_pool.length} other=${other_pool.length} ratio=${PREFERRED_FEED_RATIO}`);
 
             ranked_videos = interleave_by_ratio(preferred_pool, other_pool, PREFERRED_FEED_RATIO);
         } else {
