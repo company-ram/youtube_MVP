@@ -95,7 +95,7 @@ const create_videos = async(req,res)=>{
             console.log(e.message)
             return res.status(500).json({
                 success:false,
-                message:"Internal server error",
+                message:"e.message",
                 error:e.message
             })
     }
