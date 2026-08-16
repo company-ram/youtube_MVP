@@ -22,7 +22,7 @@ const WEIGHTS = {
 // Fraction of the feed that must come from the user's preferred
 // categories (liked/searched). The rest is filled with videos from
 // OTHER categories so new/unseen categories keep surfacing.
-const PREFERRED_FEED_RATIO = 0.5; // 50% preferred, 50% exploration
+const PREFERRED_FEED_RATIO = 0.8; // 50% preferred, 50% exploration
 
 // Page size. Capping this makes the ratio's effect visible across
 // each page instead of only the first few items before the (usually
