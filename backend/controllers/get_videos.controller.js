@@ -19,7 +19,7 @@ const WEIGHTS = {
 // Fraction of the feed that must come from the user's preferred
 // categories (liked/searched). The rest is filled with videos from
 // OTHER categories so new/unseen categories keep surfacing.
-const PREFERRED_FEED_RATIO = 0.5; // 90% preferred, 10% exploration
+const PREFERRED_FEED_RATIO = 0.1; // 90% preferred, 10% exploration
 
 // Distributes two already-sorted arrays into one list, keeping each
 // array's internal order, while respecting an overall target ratio
