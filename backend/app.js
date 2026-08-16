@@ -8,8 +8,6 @@ const cookie = require("cookie-parser")
 
 const cors = require("cors");
 
-const importYouTubeVideos = require("./services/youtubeImporter");
-
 const users = require("./models/users")
 
 const views = require("./routes/views.router")
@@ -50,11 +48,6 @@ mongoose.connect(url)
     .then(async () => {
 
         console.log("MongoDB connected");
-
-        // تشغيل استيراد YouTube تلقائيًا
-        await importYouTubeVideos();
-
-        console.log("YouTube import finished");
 
     })
     .catch((e) => {
