@@ -32,4 +32,10 @@ const schema = mongoose.Schema(
   }
 );
 
+// Speeds up the ranking algorithm's catalog queries:
+// - .sort({ createdAt: -1 }) when building the "recent uploads" pool
+// - matching a video's category against the user's preferred categories
+schema.index({ createdAt: -1 });
+schema.index({ category: 1 });
+
 module.exports = mongoose.model("video", schema);
