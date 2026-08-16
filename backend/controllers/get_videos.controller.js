@@ -21,6 +21,18 @@ const WEIGHTS = {
 // OTHER categories so new/unseen categories keep surfacing.
 const PREFERRED_FEED_RATIO = 0.5; // 50% preferred, 50% exploration
 
+// Max videos returned per request. Capping this makes the ratio's
+// effect visible across the WHOLE feed instead of only the first
+// few items before the (usually much smaller) preferred pool runs out.
+const FEED_LIMIT = 40;
+
+// Normalizes a category string so "Sports", " sports ", "SPORTS"
+// all match each other. Prevents silent mismatches between what's
+// stored on the user (your_category/search_categories) and what's
+// stored on the video (category).
+const normalize_category = (cat) =>
+    typeof cat === "string" ? cat.trim().toLowerCase() : cat;
+
 // Distributes two already-sorted arrays into one list, keeping each
 // array's internal order, while respecting an overall target ratio
 // for how often items from `primary` should appear vs `secondary`.
@@ -123,6 +135,18 @@ const get_all_videos = async (req, res) => {
             category_weights[cat] = (category_weights[cat] || 0) + WEIGHTS.SEARCHED_CATEGORY;
         }
 
+        // Same weights, but keyed by normalized category name so a video
+        // with category "Sports" still matches a user preference stored
+        // as " sports" or "SPORTS". This is what scoring/matching uses;
+        // `category_weights` above stays as-is for the preferredCategories
+        // response field (original casing the frontend already expects).
+        const normalized_weight_lookup = {};
+
+        for (const [cat, weight] of Object.entries(category_weights)) {
+            const key = normalize_category(cat);
+            normalized_weight_lookup[key] = (normalized_weight_lookup[key] || 0) + weight;
+        }
+
         const has_interests = Object.keys(category_weights).length > 0;
 
 
@@ -158,8 +182,13 @@ const get_all_videos = async (req, res) => {
         const scored_videos = all_videos.map(video => {
             let score = 0;
 
-            if (video.category && category_weights[video.category]) {
-                score += category_weights[video.category];
+            const video_category_key = normalize_category(video.category);
+            const matched_weight = video_category_key
+                ? (normalized_weight_lookup[video_category_key] || 0)
+                : 0;
+
+            if (matched_weight > 0) {
+                score += matched_weight;
             }
 
             const views = Number(video.views) || 0;
@@ -172,7 +201,7 @@ const get_all_videos = async (req, res) => {
 
             score += Math.random() * WEIGHTS.EXPLORATION_MAX;
 
-            const is_preferred = Boolean(video.category && category_weights[video.category]);
+            const is_preferred = matched_weight > 0;
 
             return { video, score, is_preferred };
         });
@@ -192,15 +221,16 @@ const get_all_videos = async (req, res) => {
                 .sort((a, b) => b.score - a.score)
                 .map(item => item.video);
 
-            // TEMP DEBUG — احذف السطر ده بعد ما تتأكد من السبب
-            console.log(`[feed debug] total=${all_videos.length} preferred=${preferred_pool.length} other=${other_pool.length} ratio=${PREFERRED_FEED_RATIO}`);
-
             ranked_videos = interleave_by_ratio(preferred_pool, other_pool, PREFERRED_FEED_RATIO);
         } else {
             // No preferences yet -> plain discovery feed, no ratio to enforce.
             scored_videos.sort((a, b) => b.score - a.score);
             ranked_videos = scored_videos.map(item => item.video);
         }
+
+        // Cap the response so the ratio's effect covers the whole feed
+        // instead of getting diluted across hundreds of items.
+        ranked_videos = ranked_videos.slice(0, FEED_LIMIT);
 
 
         // =========================================
