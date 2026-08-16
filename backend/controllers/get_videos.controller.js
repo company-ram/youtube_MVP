@@ -16,6 +16,44 @@ const WEIGHTS = {
     EXPLORATION_MAX: 4      // random noise so new/other categories can surface
 };
 
+// Fraction of the feed that must come from the user's preferred
+// categories (liked/searched). The rest is filled with videos from
+// OTHER categories so new/unseen categories keep surfacing.
+const PREFERRED_FEED_RATIO = 0.9; // 90% preferred, 10% exploration
+
+// Distributes two already-sorted arrays into one list, keeping each
+// array's internal order, while respecting an overall target ratio
+// for how often items from `primary` should appear vs `secondary`.
+// e.g. ratio 0.9 -> roughly 9 primary items for every 1 secondary item.
+const interleave_by_ratio = (primary, secondary, ratio) => {
+    const result = [];
+    let i = 0;
+    let j = 0;
+    let primary_taken = 0;
+    let secondary_taken = 0;
+
+    while (i < primary.length || j < secondary.length) {
+        const total_taken = primary_taken + secondary_taken;
+        const target_primary = (total_taken + 1) * ratio;
+
+        const should_take_primary =
+            i < primary.length &&
+            (j >= secondary.length || primary_taken < target_primary);
+
+        if (should_take_primary) {
+            result.push(primary[i]);
+            i += 1;
+            primary_taken += 1;
+        } else {
+            result.push(secondary[j]);
+            j += 1;
+            secondary_taken += 1;
+        }
+    }
+
+    return result;
+};
+
 const get_all_videos = async (req, res) => {
     try {
 
@@ -134,12 +172,32 @@ const get_all_videos = async (req, res) => {
 
             score += Math.random() * WEIGHTS.EXPLORATION_MAX;
 
-            return { video, score };
+            const is_preferred = Boolean(video.category && category_weights[video.category]);
+
+            return { video, score, is_preferred };
         });
 
-        scored_videos.sort((a, b) => b.score - a.score);
+        let ranked_videos;
 
-        const ranked_videos = scored_videos.map(item => item.video);
+        if (has_interests) {
+            // Split into two pools so we can control the mix explicitly,
+            // instead of letting a single blended score decide it.
+            const preferred_pool = scored_videos
+                .filter(item => item.is_preferred)
+                .sort((a, b) => b.score - a.score)
+                .map(item => item.video);
+
+            const other_pool = scored_videos
+                .filter(item => !item.is_preferred)
+                .sort((a, b) => b.score - a.score)
+                .map(item => item.video);
+
+            ranked_videos = interleave_by_ratio(preferred_pool, other_pool, PREFERRED_FEED_RATIO);
+        } else {
+            // No preferences yet -> plain discovery feed, no ratio to enforce.
+            scored_videos.sort((a, b) => b.score - a.score);
+            ranked_videos = scored_videos.map(item => item.video);
+        }
 
 
         // =========================================
