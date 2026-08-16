@@ -2,12 +2,6 @@ const mongoose = require("mongoose");
 
 const schema = mongoose.Schema(
   {
-    videoId: {
-      type: String,
-      unique: true,
-      index: true
-    },
-
     title: {
       type: String,
       required: true
