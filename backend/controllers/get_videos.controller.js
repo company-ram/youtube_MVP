@@ -13,28 +13,25 @@ const WEIGHTS = {
     SEARCHED_CATEGORY: 2,   // user only searched this category before
     RECENCY_MAX: 5,         // max boost for a brand new video
     RECENCY_DECAY_DAYS: 30, // recency boost fades out over ~30 days
-    EXPLORATION_MAX: 4,     // random noise so new/other categories can surface
+    EXPLORATION_MAX: 4,     // random noise so ordering isn't pure popularity
     VIEWS_WEIGHT: 1,        // multiplier on log10(views)
     LIKES_WEIGHT: 2         // multiplier on log10(likes) - a like takes more
                              // effort than a passive view, so it counts more
 };
 
-// Fraction of the feed that must come from the user's preferred
-// categories (liked/searched). The rest is filled with videos from
-// OTHER categories so new/unseen categories keep surfacing.
-const PREFERRED_FEED_RATIO = 0.9; // 50% preferred, 50% exploration
+// Fixed number of "other category" videos to append AFTER all of the
+// user's preferred-category videos. Per product request: show the user
+// EVERYTHING from categories they like/search, plus a small fixed slice
+// of unrelated stuff so other categories still get discovered.
+const OTHER_CATEGORY_COUNT = 20;
 
-// Page size. Capping this makes the ratio's effect visible across
-// each page instead of only the first few items before the (usually
-// much smaller) preferred pool runs out.
+// Page size for pagination over the final combined list.
 const FEED_LIMIT = 40;
 
-// How many candidate videos we pull before ranking. Split between a
-// "recent" slice (so brand-new uploads are ALWAYS in the running,
-// regardless of MongoDB's natural document order) and a random
-// sample of the rest of the catalog (so older/less-viewed videos
-// still get a fair shot at being discovered instead of the pool
-// always being e.g. "whatever 500 docs come back first").
+// Only used for the NO-PREFERENCES fallback (brand new user with no
+// liked/searched categories yet) — a broad discovery pool, same idea
+// as before: recent uploads guaranteed a shot + a random sample of the
+// rest of the catalog.
 const RECENT_CANDIDATE_POOL = 600;
 const RANDOM_CANDIDATE_POOL = 700;
 
@@ -45,44 +42,11 @@ const RANDOM_CANDIDATE_POOL = 700;
 const normalize_category = (cat) =>
     typeof cat === "string" ? cat.trim().toLowerCase() : cat;
 
-// Distributes two already-sorted arrays into one list, keeping each
-// array's internal order, while respecting an overall target ratio
-// for how often items from `primary` should appear vs `secondary`.
-// e.g. ratio 0.9 -> roughly 9 primary items for every 1 secondary item.
-const interleave_by_ratio = (primary, secondary, ratio) => {
-    const result = [];
-    let i = 0;
-    let j = 0;
-    let primary_taken = 0;
-    let secondary_taken = 0;
-
-    while (i < primary.length || j < secondary.length) {
-        const total_taken = primary_taken + secondary_taken;
-        const target_primary = (total_taken + 1) * ratio;
-
-        const should_take_primary =
-            i < primary.length &&
-            (j >= secondary.length || primary_taken < target_primary);
-
-        if (should_take_primary) {
-            result.push(primary[i]);
-            i += 1;
-            primary_taken += 1;
-        } else {
-            result.push(secondary[j]);
-            j += 1;
-            secondary_taken += 1;
-        }
-    }
-
-    return result;
-};
-
 // Deterministic pseudo-random generator (mulberry32). Same seed always
 // produces the same sequence. We use this INSTEAD OF Math.random() for
 // the exploration signal so a given user's feed order is STABLE across
 // requests on the same day (no videos silently jumping around on every
-// refresh or page load - which would also break pagination, since a
+// refresh or page load — which would also break pagination, since a
 // video could appear on page 1 AND page 2 depending on when you asked),
 // but the order still reshuffles day to day so exploration stays fresh.
 const mulberry32 = (seed) => {
@@ -189,59 +153,18 @@ const get_all_videos = async (req, res) => {
 
 
         // =========================================
-        // 4. Always pull from a broad slice of the
-        //    FULL catalog, never just the user's
-        //    favorite categories, so every category
-        //    stays reachable and the feed never turns
-        //    into a filter bubble.
-        //
-        //    We combine:
-        //      - the most recent N uploads (explicitly
-        //        sorted, so brand-new videos are never
-        //        at the mercy of Mongo's natural order)
-        //      - a truly random sample of the rest of
-        //        the catalog (so older/rarely-surfaced
-        //        videos still get a shot at being seen)
-        // =========================================
-
-        const recent_videos = await videos
-            .find({})
-            .sort({ createdAt: -1 })
-            .limit(RECENT_CANDIDATE_POOL)
-            .lean();
-
-        const recent_ids = recent_videos.map(v => v._id);
-
-        const sampled_videos = await videos.aggregate([
-            { $match: { _id: { $nin: recent_ids } } },
-            { $sample: { size: RANDOM_CANDIDATE_POOL } }
-        ]);
-
-        const all_videos = [...recent_videos, ...sampled_videos];
-
-
-        // =========================================
-        // 5. Score every video on 4 independent
-        //    signals, then rank by total score:
-        //      - personalization (category match)
-        //      - popularity (views + likes, log-scaled
-        //        so a single viral video can't dominate;
-        //        likes weighted higher since liking takes
-        //        more effort than a passive view)
-        //      - recency (fresh uploads get a fading
-        //        boost)
-        //      - exploration (small, per-user/per-day
-        //        deterministic noise so the order isn't
-        //        pure popularity and other categories
-        //        still get a chance to surface - without
-        //        reshuffling on every single refresh)
+        // 4. Scoring helper — same 3 signals as
+        //    before (popularity, recency, exploration)
+        //    plus the category-match weight when it
+        //    applies. Used to ORDER each pool, not to
+        //    decide which pool a video belongs to.
         // =========================================
 
         const now = Date.now();
         const today_str = new Date(now).toISOString().slice(0, 10); // YYYY-MM-DD
         const rng = mulberry32(hash_to_seed(`${decoded.id}-${today_str}`));
 
-        const scored_videos = all_videos.map(video => {
+        const score_video = (video) => {
             let score = 0;
 
             const video_category_key = normalize_category(video.category);
@@ -265,32 +188,89 @@ const get_all_videos = async (req, res) => {
 
             score += rng() * WEIGHTS.EXPLORATION_MAX;
 
-            const is_preferred = matched_weight > 0;
+            return score;
+        };
 
-            return { video, score, is_preferred };
-        });
+        const rank_by_score = (video_list) =>
+            video_list
+                .map(video => ({ video, score: score_video(video) }))
+                .sort((a, b) => b.score - a.score)
+                .map(item => item.video);
+
+
+        // =========================================
+        // 5. Build the feed.
+        //
+        //    WITH interests: pull EVERY video whose
+        //    category matches something the user
+        //    likes/searched (no sampling — this is
+        //    the full set), rank it, then append a
+        //    FIXED, small random slice of videos from
+        //    OTHER categories so new/unseen categories
+        //    still get discovered.
+        //
+        //    WITHOUT interests: fall back to the old
+        //    broad discovery pool (recent uploads +
+        //    random sample of the catalog), since
+        //    there's no preference to match against.
+        // =========================================
 
         let ranked_videos;
 
         if (has_interests) {
-            // Split into two pools so we can control the mix explicitly,
-            // instead of letting a single blended score decide it.
-            const preferred_pool = scored_videos
-                .filter(item => item.is_preferred)
-                .sort((a, b) => b.score - a.score)
-                .map(item => item.video);
+            const preferred_keys = Object.keys(normalized_weight_lookup);
 
-            const other_pool = scored_videos
-                .filter(item => !item.is_preferred)
-                .sort((a, b) => b.score - a.score)
-                .map(item => item.video);
+            // Normalize the category on each video INSIDE the pipeline
+            // (trim + lowercase) so this matches normalize_category()
+            // above exactly — "Sports" / " sports " / "SPORTS" all count.
+            const preferred_videos = await videos.aggregate([
+                {
+                    $addFields: {
+                        __normalized_category: {
+                            $toLower: { $trim: { input: { $ifNull: ["$category", ""] } } }
+                        }
+                    }
+                },
+                { $match: { __normalized_category: { $in: preferred_keys } } },
+                { $project: { __normalized_category: 0 } }
+            ]);
 
-            ranked_videos = interleave_by_ratio(preferred_pool, other_pool, PREFERRED_FEED_RATIO);
+            const preferred_ids = preferred_videos.map(v => v._id);
+
+            // Fixed-size random sample from EVERYTHING outside the
+            // preferred categories. Excluding preferred_ids means this
+            // never duplicates a video that's already in the list above.
+            const other_videos = await videos.aggregate([
+                { $match: { _id: { $nin: preferred_ids } } },
+                { $sample: { size: OTHER_CATEGORY_COUNT } }
+            ]);
+
+            // All liked/searched-category videos first (best-scored
+            // first), then the small slice of other-category videos
+            // appended at the end.
+            ranked_videos = [
+                ...rank_by_score(preferred_videos),
+                ...rank_by_score(other_videos)
+            ];
         } else {
-            // No preferences yet -> plain discovery feed, no ratio to enforce.
-            scored_videos.sort((a, b) => b.score - a.score);
-            ranked_videos = scored_videos.map(item => item.video);
+            // No preferences yet -> plain discovery feed.
+            const recent_videos = await videos
+                .find({})
+                .sort({ createdAt: -1 })
+                .limit(RECENT_CANDIDATE_POOL)
+                .lean();
+
+            const recent_ids = recent_videos.map(v => v._id);
+
+            const sampled_videos = await videos.aggregate([
+                { $match: { _id: { $nin: recent_ids } } },
+                { $sample: { size: RANDOM_CANDIDATE_POOL } }
+            ]);
+
+            const all_videos = [...recent_videos, ...sampled_videos];
+            ranked_videos = rank_by_score(all_videos);
         }
+
 
         // =========================================
         // 6. Paginate. The seeded RNG above keeps
@@ -322,7 +302,7 @@ const get_all_videos = async (req, res) => {
             // to highlight/pin those categories in the UI - but don't use
             // it to strip out videos NOT in this list from the default
             // feed. This ranking algorithm already deliberately mixes in
-            // "other" categories (see PREFERRED_FEED_RATIO above); filtering
+            // "other" categories (see OTHER_CATEGORY_COUNT above); filtering
             // them back out client-side would silently cancel that logic.
             preferredCategories: Object.keys(category_weights)
         });
