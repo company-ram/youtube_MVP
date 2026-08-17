@@ -199,7 +199,66 @@ const get_all_videos = async (req, res) => {
 
 
         // =========================================
-        // 5. Build the feed.
+        // 4.5 Explicit category browse mode.
+        //
+        //     When the caller passes ?category=X (the user clicked a
+        //     specific category chip on the frontend), that request is
+        //     no longer about personalization — it's "show me
+        //     everything in this category". Return EVERY video in that
+        //     category, ranked by the same score, regardless of the
+        //     user's liked/searched interests.
+        //
+        //     Without this, the frontend can only filter over whatever
+        //     small slice of "other" videos happened to already be in
+        //     the personalized feed (see OTHER_CATEGORY_COUNT above),
+        //     which silently hides most of the catalog for any
+        //     non-preferred category. This bypasses that limit
+        //     entirely for an explicit category request.
+        // =========================================
+
+        const requested_category = typeof req.query.category === "string"
+            ? req.query.category.trim()
+            : "";
+
+        if (requested_category && requested_category.toLowerCase() !== "all") {
+            const normalized_requested = normalize_category(requested_category);
+
+            const category_videos = await videos.aggregate([
+                {
+                    $addFields: {
+                        __normalized_category: {
+                            $toLower: { $trim: { input: { $ifNull: ["$category", ""] } } }
+                        }
+                    }
+                },
+                { $match: { __normalized_category: normalized_requested } },
+                { $project: { __normalized_category: 0 } }
+            ]);
+
+            const ranked_category_videos = rank_by_score(category_videos);
+
+            const requested_page = parseInt(req.query.page, 10);
+            const page = Number.isInteger(requested_page) && requested_page > 0 ? requested_page : 1;
+            const offset = (page - 1) * FEED_LIMIT;
+
+            const paged_videos = ranked_category_videos.slice(offset, offset + FEED_LIMIT);
+            const has_more = offset + FEED_LIMIT < ranked_category_videos.length;
+
+            return res.status(200).json({
+                success: true,
+                message: `Category feed: ${requested_category}`,
+                videos: paged_videos,
+                page,
+                hasMore: has_more,
+                preferredCategories: Object.keys(category_weights)
+            });
+        }
+
+
+        // =========================================
+        // 5. Build the personalized/discovery feed
+        //    (only reached when no ?category= was
+        //    requested above).
         //
         //    WITH interests: pull EVERY video whose
         //    category matches something the user
@@ -318,4 +377,86 @@ const get_all_videos = async (req, res) => {
     }
 };
 
-module.exports = get_all_videos;
+// =========================================
+// GET a single video by its id.
+//
+// Used by the watch page to load the EXACT video it needs directly,
+// instead of hoping that video happens to be inside whatever slice
+// the personalized/category feed above returned. Any video that
+// exists can be opened directly this way, regardless of whether it
+// would rank into the current user's feed.
+// =========================================
+
+const get_video_by_id = async (req, res) => {
+    try {
+
+        let decoded;
+
+        try {
+            decoded = jwt.verify(
+                req.cookies.token,
+                process.env.JWT_PASSWORD
+            );
+        } catch (error) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid or expired token"
+            });
+        }
+
+        if (!decoded?.id) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid token"
+            });
+        }
+
+        const { id } = req.params;
+
+        if (!id) {
+            return res.status(400).json({
+                success: false,
+                message: "Video id is required"
+            });
+        }
+
+        let video;
+
+        try {
+            video = await videos.findById(id).lean();
+        } catch (error) {
+            // Malformed id (not a valid ObjectId, etc.) - treat as
+            // "not found" rather than a 500, same as a missing doc.
+            return res.status(404).json({
+                success: false,
+                message: "Video not found"
+            });
+        }
+
+        if (!video) {
+            return res.status(404).json({
+                success: false,
+                message: "Video not found"
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            video
+        });
+
+    } catch (e) {
+
+        console.error("Get video by id error:", e);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error"
+        });
+    }
+};
+
+module.exports = {
+    get_all_videos,
+    get_video_by_id
+};
