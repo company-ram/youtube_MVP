@@ -22,7 +22,7 @@ const WEIGHTS = {
 // Fraction of the feed that must come from the user's preferred
 // categories (liked/searched). The rest is filled with videos from
 // OTHER categories so new/unseen categories keep surfacing.
-const PREFERRED_FEED_RATIO = 0.5; // 50% preferred, 50% exploration
+const PREFERRED_FEED_RATIO = 0.9; // 50% preferred, 50% exploration
 
 // Page size. Capping this makes the ratio's effect visible across
 // each page instead of only the first few items before the (usually
@@ -35,8 +35,8 @@ const FEED_LIMIT = 40;
 // sample of the rest of the catalog (so older/less-viewed videos
 // still get a fair shot at being discovered instead of the pool
 // always being e.g. "whatever 500 docs come back first").
-const RECENT_CANDIDATE_POOL = 300;
-const RANDOM_CANDIDATE_POOL = 200;
+const RECENT_CANDIDATE_POOL = 600;
+const RANDOM_CANDIDATE_POOL = 700;
 
 // Normalizes a category string so "Sports", " sports ", "SPORTS"
 // all match each other. Prevents silent mismatches between what's
