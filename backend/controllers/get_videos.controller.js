@@ -25,9 +25,6 @@ const WEIGHTS = {
 // of unrelated stuff so other categories still get discovered.
 const OTHER_CATEGORY_COUNT = 20;
 
-// Page size for pagination over the final combined list.
-const FEED_LIMIT = 40;
-
 // Only used for the NO-PREFERENCES fallback (brand new user with no
 // liked/searched categories yet) — a broad discovery pool, same idea
 // as before: recent uploads guaranteed a shot + a random sample of the
@@ -237,19 +234,12 @@ const get_all_videos = async (req, res) => {
 
             const ranked_category_videos = rank_by_score(category_videos);
 
-            const requested_page = parseInt(req.query.page, 10);
-            const page = Number.isInteger(requested_page) && requested_page > 0 ? requested_page : 1;
-            const offset = (page - 1) * FEED_LIMIT;
-
-            const paged_videos = ranked_category_videos.slice(offset, offset + FEED_LIMIT);
-            const has_more = offset + FEED_LIMIT < ranked_category_videos.length;
-
             return res.status(200).json({
                 success: true,
                 message: `Category feed: ${requested_category}`,
-                videos: paged_videos,
-                page,
-                hasMore: has_more,
+                videos: ranked_category_videos,
+                page: 1,
+                hasMore: false,
                 preferredCategories: Object.keys(category_weights)
             });
         }
@@ -332,31 +322,20 @@ const get_all_videos = async (req, res) => {
 
 
         // =========================================
-        // 6. Paginate. The seeded RNG above keeps
-        //    this ranking stable for the rest of
-        //    today, so slicing by page never skips
-        //    or repeats items the way it would with
-        //    a plain Math.random() re-rolled per call.
-        // =========================================
-
-        const requested_page = parseInt(req.query.page, 10);
-        const page = Number.isInteger(requested_page) && requested_page > 0 ? requested_page : 1;
-        const offset = (page - 1) * FEED_LIMIT;
-
-        const paged_videos = ranked_videos.slice(offset, offset + FEED_LIMIT);
-        const has_more = offset + FEED_LIMIT < ranked_videos.length;
-
-
-        // =========================================
-        // 7. Response
+        // 6. Response. No pagination - every matching
+        //    video for this user (preferred categories
+        //    + the fixed OTHER_CATEGORY_COUNT slice, or
+        //    the full discovery pool) goes back in one
+        //    response. The seeded RNG above still keeps
+        //    this ranking stable for the rest of today.
         // =========================================
 
         return res.status(200).json({
             success: true,
             message: has_interests ? "Personalized feed" : "Discovery feed for new user",
-            videos: paged_videos,
-            page,
-            hasMore: has_more,
+            videos: ranked_videos,
+            page: 1,
+            hasMore: false,
             // Categories the user actually likes/searched before. Use this
             // to highlight/pin those categories in the UI - but don't use
             // it to strip out videos NOT in this list from the default
