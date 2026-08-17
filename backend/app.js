@@ -68,10 +68,6 @@ app.use(cors({
     origin: "https://hassangame994-bot.github.io",
     credentials: true
 }));
-app.options("*", cors({
-    origin: "https://hassangame994-bot.github.io",
-    credentials: true
-}));
 
 app.use(cookie())
 
