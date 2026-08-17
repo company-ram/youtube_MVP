@@ -27,10 +27,60 @@ const OTHER_CATEGORY_COUNT = 20;
 
 // Only used for the NO-PREFERENCES fallback (brand new user with no
 // liked/searched categories yet) — a broad discovery pool, same idea
-// as before: recent uploads guaranteed a shot + a random sample of the
-// rest of the catalog.
+// as before: recent uploads guaranteed a shot + a sample of the rest
+// of the catalog.
 const RECENT_CANDIDATE_POOL = 600;
 const RANDOM_CANDIDATE_POOL = 700;
+
+// =========================================
+// Candidate pools for the two spots that used to rely on MongoDB's
+// $sample (true random, re-rolled on EVERY single request).
+//
+// That was fine back when the whole feed went out in one response,
+// but now that the feed is paginated (see below), $sample becomes a
+// bug: asking for page 2 would hand back a totally different random
+// slice than page 1 saw, silently duplicating some videos the user
+// already scrolled past and skipping others entirely.
+//
+// Fix: pull a bounded, DETERMINISTIC candidate pool straight from the
+// DB (same query -> same docs, every time), then reorder it with the
+// same seeded per-user-per-day RNG used for the exploration score
+// below (see seeded_shuffle). That keeps these two "random" buckets
+// IDENTICAL across every page request for the rest of today, while
+// still reshuffling day to day. Each pool is sized larger than what's
+// actually used so there's still real variety to shuffle through.
+// =========================================
+const OTHER_CATEGORY_CANDIDATE_POOL = 500;   // pool OTHER_CATEGORY_COUNT is picked from
+const DISCOVERY_CANDIDATE_POOL = 3000;       // pool RANDOM_CANDIDATE_POOL is picked from
+
+// =========================================
+// Pagination
+// =========================================
+// The feed still has to be scored/ranked entirely in memory (the
+// ranking mixes DB fields with a per-user seeded RNG, which Mongo
+// can't sort by on its own) but the RESPONSE is now sliced into
+// pages, so the client never has to download the whole ranked list
+// in one shot — it only asks for more once the user actually scrolls
+// far enough to need it.
+const DEFAULT_PAGE_SIZE = 24;
+const MAX_PAGE_SIZE = 50;
+
+const parse_pagination = (req) => {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const requested_limit = parseInt(req.query.limit, 10) || DEFAULT_PAGE_SIZE;
+    const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, requested_limit));
+    return { page, limit };
+};
+
+// Slices a fully-ranked list into the requested page. hasMore tells
+// the frontend whether it's worth asking for page + 1 later.
+const paginate = (ranked_list, page, limit) => {
+    const total = ranked_list.length;
+    const start = (page - 1) * limit;
+    const items = ranked_list.slice(start, start + limit);
+    const hasMore = start + items.length < total;
+    return { items, hasMore, total };
+};
 
 // Normalizes a category string so "Sports", " sports ", "SPORTS"
 // all match each other. Prevents silent mismatches between what's
@@ -40,12 +90,12 @@ const normalize_category = (cat) =>
     typeof cat === "string" ? cat.trim().toLowerCase() : cat;
 
 // Deterministic pseudo-random generator (mulberry32). Same seed always
-// produces the same sequence. We use this INSTEAD OF Math.random() for
-// the exploration signal so a given user's feed order is STABLE across
-// requests on the same day (no videos silently jumping around on every
-// refresh or page load — which would also break pagination, since a
-// video could appear on page 1 AND page 2 depending on when you asked),
-// but the order still reshuffles day to day so exploration stays fresh.
+// produces the same sequence. We use this INSTEAD OF Math.random() (and
+// instead of $sample - see the candidate pool comment above) so a given
+// user's feed order AND content is STABLE across requests on the same
+// day (no videos silently jumping around or duplicating between page
+// loads, which would break pagination), but the order still reshuffles
+// day to day so exploration stays fresh.
 const mulberry32 = (seed) => {
     let a = seed;
     return () => {
@@ -63,6 +113,18 @@ const hash_to_seed = (str) => {
         hash = (Math.imul(31, hash) + str.charCodeAt(i)) | 0;
     }
     return hash;
+};
+
+// Fisher-Yates shuffle driven by the seeded RNG above, instead of
+// Math.random()/$sample. Used anywhere a "random" subset needs to
+// stay identical across paginated requests within the same day.
+const seeded_shuffle = (array, rng) => {
+    const shuffled = array.slice();
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
 };
 
 const get_all_videos = async (req, res) => {
@@ -196,14 +258,24 @@ const get_all_videos = async (req, res) => {
 
 
         // =========================================
-        // 4.5 Explicit category browse mode.
+        // 4.5 Read pagination params once, shared by
+        //     every branch below (category browse,
+        //     personalized feed, discovery feed).
+        // =========================================
+
+        const { page, limit } = parse_pagination(req);
+
+
+        // =========================================
+        // 4.6 Explicit category browse mode.
         //
         //     When the caller passes ?category=X (the user clicked a
         //     specific category chip on the frontend), that request is
         //     no longer about personalization — it's "show me
         //     everything in this category". Return EVERY video in that
         //     category, ranked by the same score, regardless of the
-        //     user's liked/searched interests.
+        //     user's liked/searched interests — but still paginated,
+        //     same as every other branch below.
         //
         //     Without this, the frontend can only filter over whatever
         //     small slice of "other" videos happened to already be in
@@ -233,13 +305,15 @@ const get_all_videos = async (req, res) => {
             ]);
 
             const ranked_category_videos = rank_by_score(category_videos);
+            const { items, hasMore, total } = paginate(ranked_category_videos, page, limit);
 
             return res.status(200).json({
                 success: true,
                 message: `Category feed: ${requested_category}`,
-                videos: ranked_category_videos,
-                page: 1,
-                hasMore: false,
+                videos: items,
+                page,
+                hasMore,
+                totalVideos: total,
                 preferredCategories: Object.keys(category_weights)
             });
         }
@@ -254,14 +328,15 @@ const get_all_videos = async (req, res) => {
         //    category matches something the user
         //    likes/searched (no sampling — this is
         //    the full set), rank it, then append a
-        //    FIXED, small random slice of videos from
-        //    OTHER categories so new/unseen categories
-        //    still get discovered.
+        //    FIXED, small deterministic-per-day slice
+        //    of videos from OTHER categories so
+        //    new/unseen categories still get discovered.
         //
         //    WITHOUT interests: fall back to the old
         //    broad discovery pool (recent uploads +
-        //    random sample of the catalog), since
-        //    there's no preference to match against.
+        //    a deterministic-per-day sample of the
+        //    catalog), since there's no preference to
+        //    match against.
         // =========================================
 
         let ranked_videos;
@@ -286,13 +361,18 @@ const get_all_videos = async (req, res) => {
 
             const preferred_ids = preferred_videos.map(v => v._id);
 
-            // Fixed-size random sample from EVERYTHING outside the
-            // preferred categories. Excluding preferred_ids means this
-            // never duplicates a video that's already in the list above.
-            const other_videos = await videos.aggregate([
-                { $match: { _id: { $nin: preferred_ids } } },
-                { $sample: { size: OTHER_CATEGORY_COUNT } }
-            ]);
+            // Bounded, deterministic pool of everything OUTSIDE the
+            // preferred categories, then a seeded shuffle picks the
+            // fixed OTHER_CATEGORY_COUNT slice out of it. Same slice
+            // every time today, on every page - see the pool comment
+            // near the top of the file for why this replaced $sample.
+            const other_candidates = await videos
+                .find({ _id: { $nin: preferred_ids } })
+                .limit(OTHER_CATEGORY_CANDIDATE_POOL)
+                .lean();
+
+            const other_videos = seeded_shuffle(other_candidates, rng)
+                .slice(0, OTHER_CATEGORY_COUNT);
 
             // All liked/searched-category videos first (best-scored
             // first), then the small slice of other-category videos
@@ -311,10 +391,17 @@ const get_all_videos = async (req, res) => {
 
             const recent_ids = recent_videos.map(v => v._id);
 
-            const sampled_videos = await videos.aggregate([
-                { $match: { _id: { $nin: recent_ids } } },
-                { $sample: { size: RANDOM_CANDIDATE_POOL } }
-            ]);
+            // Same idea as other_videos above: a bounded, deterministic
+            // candidate pool, seeded-shuffled, then trimmed down to
+            // RANDOM_CANDIDATE_POOL - identical selection across every
+            // page request for the rest of today.
+            const discovery_candidates = await videos
+                .find({ _id: { $nin: recent_ids } })
+                .limit(DISCOVERY_CANDIDATE_POOL)
+                .lean();
+
+            const sampled_videos = seeded_shuffle(discovery_candidates, rng)
+                .slice(0, RANDOM_CANDIDATE_POOL);
 
             const all_videos = [...recent_videos, ...sampled_videos];
             ranked_videos = rank_by_score(all_videos);
@@ -322,20 +409,27 @@ const get_all_videos = async (req, res) => {
 
 
         // =========================================
-        // 6. Response. No pagination - every matching
-        //    video for this user (preferred categories
-        //    + the fixed OTHER_CATEGORY_COUNT slice, or
-        //    the full discovery pool) goes back in one
-        //    response. The seeded RNG above still keeps
-        //    this ranking stable for the rest of today.
+        // 6. Paginated response. Only this page's
+        //    slice of the ranked list goes back to
+        //    the client - hasMore tells the frontend
+        //    whether there's a page + 1 worth asking
+        //    for later (see infinite scroll on the
+        //    home page). The seeded RNG above keeps
+        //    the full ranking (and therefore every
+        //    page's contents) stable for the rest of
+        //    today, so scrolling further never repeats
+        //    or skips a video.
         // =========================================
+
+        const { items, hasMore, total } = paginate(ranked_videos, page, limit);
 
         return res.status(200).json({
             success: true,
             message: has_interests ? "Personalized feed" : "Discovery feed for new user",
-            videos: ranked_videos,
-            page: 1,
-            hasMore: false,
+            videos: items,
+            page,
+            hasMore,
+            totalVideos: total,
             // Categories the user actually likes/searched before. Use this
             // to highlight/pin those categories in the UI - but don't use
             // it to strip out videos NOT in this list from the default
